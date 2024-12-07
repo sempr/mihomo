@@ -145,6 +145,11 @@ func (sd *Dispatcher) Enable() bool {
 }
 
 func (sd *Dispatcher) sniffDomain(conn *N.BufferedConn, metadata *C.Metadata) (string, error) {
+
+	defer func(startTime time.Time) {
+		log.Debugln("[Sniffer] [%s] used %s", metadata.DstIP.String(), time.Since(startTime))
+	}(time.Now())
+
 	for s := range sd.sniffers {
 		if s.SupportNetwork() == C.TCP {
 			_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -170,8 +175,24 @@ func (sd *Dispatcher) sniffDomain(conn *N.BufferedConn, metadata *C.Metadata) (s
 
 			host, err := s.SniffData(bytes)
 			if err != nil {
-				//log.Debugln("[Sniffer] [%s] Sniff data failed %s", s.Protocol(), metadata.DstIP)
-				continue
+				log.Debugln("[Sniffer] [%s] Sniff data failed %s", s.Protocol(), metadata.DstIP)
+				if err2, ok := err.(errNeedMoreBytes); ok {
+					conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+					bytes, err3 := conn.Peek(bufferedLen + err2.Count)
+					conn.SetReadDeadline(time.Time{})
+					if err3 != nil {
+						log.Debugln("[Sniffer] the data length not enough when do a retry")
+						continue
+					}
+					host, err3 = s.SniffData(bytes)
+					if err3 != nil {
+						log.Debugln("[Sniffer] [%s] Sniff data failed again %s", s.Protocol(), metadata.DstIP)
+						continue
+					}
+					log.Debugln("[Sniffer] [%s] Sniff data again got success %s", s.Protocol(), metadata.DstIP)
+				} else {
+					continue
+				}
 			}
 
 			_, err = netip.ParseAddr(host)
